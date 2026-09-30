@@ -1,0 +1,47 @@
+name: Daily note post
+
+# 投稿の起動は、GAS(Apps Script)が 10時・14時・20時 ごろに行う。
+# cron(schedule)は使わない。手動実行(テスト用)だけ残す。
+on:
+  workflow_dispatch: {}
+
+# GASから複数回起動されても、同時に2つ走らないようにする
+# （同じ「生成済み」行を二重投稿するのを防ぐ）
+concurrency:
+  group: note-post
+  cancel-in-progress: false
+
+jobs:
+  post:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Install Playwright browsers
+        run: npx playwright install --with-deps chromium chrome
+
+      - name: Run post script
+        env:
+          NOTE_STATE_JSON: ${{ secrets.NOTE_STATE_JSON }}
+        run: node post-note.mjs
+
+      - name: Upload debug screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: debug-screenshots
+          path: |
+            debug-*.png
+            debug-*.html
+          if-no-files-found: ignore
+          retention-days: 7
