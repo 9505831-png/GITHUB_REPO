@@ -1,21 +1,18 @@
-// post-note.mjs (修正版3 / たびくん用)
+// post-note.mjs (ふるさとくん用)
 // スプレッドシートから「生成済み」の記事を取得し、note.comへ自動投稿するスクリプト。
 // GitHub Actionsから実行される想定（ローカルでのテスト実行も可能）。
 //
 // 必要な環境変数:
 //   NOTE_STATE_JSON : note.comへのログイン状態（storageState）のJSON文字列
+//                     ★ふるさとくんのnoteアカウントでログインして作ったものにする
 //
 // 実行: node post-note.mjs
 //
-// 主な修正点:
-//  - 本文がタイトル欄に混入したら「打ち直して続行」せず、その記事を失敗扱いにする
-//  - 保存/公開が本当に成功したことを確認してからステータスを更新する
-//  - 公開成功の判定を「記事ページへの遷移」または「シェアダイアログの表示」のどちらかにした
-//    （noteは公開後に遷移せず、公開設定画面の上にシェアダイアログを出すことがあるため）
-//  - ステータス更新用のWebアプリURLを、記事生成用GASと同じプロジェクトのものに変更した
-//  - イベントハンドラは1回だけ登録（記事ごとに増えてログが重複していた）
-//  - text_notes APIのエラー本文をログに出す（422の原因特定用）
-//  - POST_MODE で「下書き保存のみ」と「公開」を切り替え可能
+// たびくん用(修正版3)からの変更点:
+//  - スプレッドシートとWebアプリのURLを、ふるさとくん用に差し替える形にした(下の★2か所)
+//  - 他のアカウント(じたんくん・たびくん)用のURLが混ざっていたら、何も投稿せずに止める
+//  - 1回の起動で投稿する最大件数(MAX_POSTS_PER_RUN)と、記事どうしの待ち時間を追加した
+//    (生成が1回2本のため。投稿待ちが溜まったときに、一度に大量投稿しないようにする)
 
 import { chromium } from 'playwright';
 import fs from 'fs';
@@ -29,16 +26,26 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // ★初回テストは、下の行の 'publish' を 'draft' に変えて、下書き保存だけで確認する。問題なければ 'publish' に戻す。
 const POST_MODE = process.env.POST_MODE || 'publish';
 
-// ★たびくん用の新しいスプレッドシート(articlesシート)
-const CSV_URL =
-  'https://docs.google.com/spreadsheets/d/1Ef2fgzRaCLf5N-Qwv4Q8_Si4C6qr8Mk2LdGmNFDqKwk/export?format=csv&gid=0';
+// ★1 ふるさとくん用の新しいスプレッドシート(articlesシート)のCSV公開URL。
+//   形式: https://docs.google.com/spreadsheets/d/<スプレッドシートID>/export?format=csv&gid=0
+//   ※gid=0 は「一番左のタブ」。articlesシートが一番左にない場合は、そのシートのgidに変える
+const CSV_URL = 'https://docs.google.com/spreadsheets/d/ここにふるさとくん用のスプレッドシートIDを入れる/export?format=csv&gid=0';
 
-// ★新しいスプレッドシートのApps Scriptをウェブアプリとしてデプロイして出てきたURL(/exec で終わるもの)に置き換える。
-//   置き換えるまでは、誤ってじたんくん用のシートを書き換えないよう、実行時に止まるようにしてある。
-const STATUS_UPDATE_URL = 'https://script.google.com/macros/s/AKfycbxCjAHixYdQa31asAdy3LXOptUhVuPy6AHzuYB5B8kyrlozGcVdrQIDvTEmftHc_A3s/exec';
+// ★2 ふるさとくん用のApps Scriptをウェブアプリとしてデプロイして出てきたURL(/exec で終わるもの)。
+//   置き換えるまでは、誤って他のアカウントのシートを書き換えないよう、実行時に止まるようにしてある。
+const STATUS_UPDATE_URL = 'https://script.google.com/macros/s/AKfycbwaxPfhKfkal68Au1ykJlLw_oOd2qsDSGCA8hAgTAmclJ6D07rq1yvvtAR-mG-WNE0Z/exec';
 
-// じたんくん用のWebアプリのURL(うっかり貼ってしまった場合に止めるための目印)
-const OLD_JITANKUN_URL_ID = 'AKfycbxkXr1jhY114yuX3Udpc2nuylt1_N9A5XZnXtjbsMsFTdllbtooNaut-sFz42ckmjU9';
+// 他のアカウント用のIDの目印(うっかり貼ってしまった場合に止めるため)
+const OTHER_ACCOUNT_MARKERS = [
+  { name: 'じたんくん用のWebアプリ', id: 'AKfycbxkXr1jhY114yuX3Udpc2nuylt1_N9A5XZnXtjbsMsFTdllbtooNaut-sFz42ckmjU9' },
+  { name: 'たびくん用のWebアプリ', id: 'AKfycbxCjAHixYdQa31asAdy3LXOptUhVuPy6AHzuYB5B8kyrlozGcVdrQIDvTEmftHc_A3s' },
+  { name: 'たびくん用のスプレッドシート', id: '1Ef2fgzRaCLf5N-Qwv4Q8_Si4C6qr8Mk2LdGmNFDqKwk' },
+];
+
+// 1回の起動で投稿する最大件数(生成は1回2本なので、通常は2件。溜まっていても一度に出しすぎない)
+const MAX_POSTS_PER_RUN = 4;
+// 記事と記事のあいだの待ち時間(ミリ秒)
+const WAIT_BETWEEN_POSTS_MS = 20000;
 
 // 記事ごとに集める「保存系APIのエラー」（main側のresponseハンドラが書き込む）
 let saveErrors = [];
@@ -373,18 +380,26 @@ async function postArticle(page, row) {
 
 // ---------- メイン処理 ----------
 (async () => {
-  // 設定ミスの防止: WebアプリのURLが未設定、またはじたんくん用のままなら、何も投稿せずに止める
-  if (!STATUS_UPDATE_URL.startsWith('https://script.google.com/')) {
+  // 設定ミスの防止: URLが未設定、または他のアカウント用のままなら、何も投稿せずに止める
+  if (!CSV_URL.startsWith('https://docs.google.com/spreadsheets/d/') || CSV_URL.includes('ここに')) {
     console.error(
-      'STATUS_UPDATE_URL が未設定です。新しいスプレッドシートのWebアプリのURL(/exec で終わるもの)を設定してください。'
+      'CSV_URL が未設定です。ふるさとくん用スプレッドシートのCSV公開URLを設定してください。'
     );
     process.exit(1);
   }
-  if (STATUS_UPDATE_URL.includes(OLD_JITANKUN_URL_ID)) {
+  if (!STATUS_UPDATE_URL.startsWith('https://script.google.com/')) {
     console.error(
-      'STATUS_UPDATE_URL が、じたんくん用のWebアプリのままです。たびくん用のURLに置き換えてください。'
+      'STATUS_UPDATE_URL が未設定です。ふるさとくん用のWebアプリのURL(/exec で終わるもの)を設定してください。'
     );
     process.exit(1);
+  }
+  for (const m of OTHER_ACCOUNT_MARKERS) {
+    if (CSV_URL.includes(m.id) || STATUS_UPDATE_URL.includes(m.id)) {
+      console.error(
+        `CSV_URL または STATUS_UPDATE_URL が、${m.name}のままです。ふるさとくん用のURLに置き換えてください。`
+      );
+      process.exit(1);
+    }
   }
 
   const stateJson = process.env.NOTE_STATE_JSON;
@@ -399,13 +414,19 @@ async function postArticle(page, row) {
   fs.writeFileSync(tmpStatePath, stateJson, 'utf-8');
 
   console.log(`POST_MODE=${POST_MODE}`);
-  const rows = await fetchTargetRows();
-  console.log(`投稿対象: ${rows.length}件`);
+  const allRows = await fetchTargetRows();
+  console.log(`投稿対象: ${allRows.length}件`);
 
-  if (rows.length === 0) {
+  if (allRows.length === 0) {
     console.log('投稿対象の記事がありません。終了します。');
     fs.unlinkSync(tmpStatePath);
     return;
+  }
+
+  // 一度に投稿しすぎないよう、上限までにする(残りは次回の起動で投稿される)
+  const rows = allRows.slice(0, MAX_POSTS_PER_RUN);
+  if (allRows.length > rows.length) {
+    console.log(`今回は${rows.length}件だけ投稿します(残り${allRows.length - rows.length}件は次回)`);
   }
 
   const browser = await chromium.launch({
@@ -443,7 +464,8 @@ async function postArticle(page, row) {
     }
   });
 
-  for (const row of rows) {
+  for (let i = 0; i < rows.length; i++) {
+    const row = rows[i];
     console.log(`投稿開始: row=${row.rowNumber} title=${row.title}`);
     try {
       const status = await postArticle(page, row);
@@ -457,6 +479,10 @@ async function postArticle(page, row) {
       const errHtml = await page.content().catch(() => '(HTML取得失敗)');
       fs.writeFileSync(path.join(__dirname, `debug-error-row${row.rowNumber}.html`), errHtml, 'utf-8');
       await updateStatus(row.rowNumber, '投稿失敗');
+    }
+
+    if (i < rows.length - 1) {
+      await page.waitForTimeout(WAIT_BETWEEN_POSTS_MS);
     }
   }
 
