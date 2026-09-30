@@ -29,7 +29,7 @@ const POST_MODE = process.env.POST_MODE || 'publish';
 // ★1 ふるさとくん用の新しいスプレッドシート(articlesシート)のCSV公開URL。
 //   形式: https://docs.google.com/spreadsheets/d/<スプレッドシートID>/export?format=csv&gid=0
 //   ※gid=0 は「一番左のタブ」。articlesシートが一番左にない場合は、そのシートのgidに変える
-const CSV_URL = 'https://docs.google.com/spreadsheets/d/ここにふるさとくん用のスプレッドシートIDを入れる/export?format=csv&gid=0';
+const CSV_URL = 'https://docs.google.com/spreadsheets/d/1gGhg9SnVQ1bQmzKoLLwf4IuC7DXU51tNAFPpLXZYR9g/export?format=csv&gid=0';
 
 // ★2 ふるさとくん用のApps Scriptをウェブアプリとしてデプロイして出てきたURL(/exec で終わるもの)。
 //   置き換えるまでは、誤って他のアカウントのシートを書き換えないよう、実行時に止まるようにしてある。
