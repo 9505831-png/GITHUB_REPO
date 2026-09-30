@@ -1,9 +1,20 @@
-name: Daily note post
+name: Daily note post (ふるさとくん)
 
-# 投稿の起動は、GAS(Apps Script)が 10時・14時・20時 ごろに行う。
+# 投稿の起動は、GAS(Apps Script)が 10時・14時・18時・22時 ごろに行う。
 # cron(schedule)は使わない。手動実行(テスト用)だけ残す。
+# 手動で実行するときは、post_mode で「下書き保存のみ(draft)」か「公開(publish)」を選べる。
+# (GASからの起動では選択されないので、自動的に publish になる)
 on:
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      post_mode:
+        description: '投稿モード(draft=下書き保存のみ / publish=公開)'
+        required: false
+        default: 'publish'
+        type: choice
+        options:
+          - publish
+          - draft
 
 # GASから複数回起動されても、同時に2つ走らないようにする
 # （同じ「生成済み」行を二重投稿するのを防ぐ）
@@ -33,6 +44,7 @@ jobs:
       - name: Run post script
         env:
           NOTE_STATE_JSON: ${{ secrets.NOTE_STATE_JSON }}
+          POST_MODE: ${{ inputs.post_mode || 'publish' }}
         run: node post-note.mjs
 
       - name: Upload debug screenshots
